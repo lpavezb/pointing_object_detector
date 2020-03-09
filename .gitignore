@@ -1,4 +1,4 @@
-./images/*
-./models/*
-./env/*
-./**.pyc
+images/
+models/
+env/
+**.pyc
