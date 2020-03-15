@@ -13,14 +13,16 @@ import rospkg
 from uchile_srvs.srv import ObjectDetection, ObjectDetectionResponse
 from uchile_msgs.msg import Rect
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
+from image_geometry import PinholeCameraModel
 from datetime import datetime
 
 class Bbox:
     def __init__(self, bbox, tag):
         self.bbox = bbox
         self.tag = tag
+        self.point = [0, 0, 0]
 
     def contains(self, x, y):
         l_x = self.bbox[0]
@@ -41,14 +43,16 @@ def detect_pointing_object_handler(req):
     rospack = rospkg.RosPack()
     models  = rospack.get_path('pointing_object_detector') + "/models"
     images  = rospack.get_path('pointing_object_detector') + "/images"
+    camera_model = PinholeCameraModel()
 
-    #img = images + "/20200306195833_image.png"
+    # img = images + "/image2.png"
     
-    #image = cv2.imread(img)
+    # image = cv2.imread(img)
     
     rospy.sleep(2)
     rospy.logwarn("START")
-    depthmsg = rospy.wait_for_message("/maqui/camera/depth/image_raw", Image)
+    depthmsg = rospy.wait_for_message("/maqui/camera/depth_registered/image_rect", Image)
+    infodepth = rospy.wait_for_message("/maqui/camera/depth_registered/camera_info", CameraInfo)
 
     bridge = CvBridge()
     try:
@@ -57,9 +61,9 @@ def detect_pointing_object_handler(req):
         print(e)
 
 
-    cv2.imwrite(images + "depth.png", depth)
-
     imagemsg = rospy.wait_for_message("/maqui/camera/front/image_raw", Image)
+    infoimage = rospy.wait_for_message("/maqui/camera/front/camera_info", CameraInfo)
+    camera_model.fromCameraInfo(infoimage)
 
     try:
         image = bridge.imgmsg_to_cv2(imagemsg, "bgr8")
@@ -81,8 +85,6 @@ def detect_pointing_object_handler(req):
         if bbox[4] > detector.opt.vis_thresh:
           sq = bbox[5:39]
 
-    #sq = [611.8907470703125, 7.758312225341797, 612.183349609375, -3.5637474060058594, 618.2316284179688, -3.8290023803710938, 608.5698852539062, -19.117870330810547, 639.1412963867188, -19.960002899169922, 596.852783203125, 21.959877014160156, 631.96826171875, 26.92244529724121, 466.5745849609375, 141.83990478515625, 466.5745849609375, 141.83990478515625, 341.8582458496094, 202.49754333496094, 341.8582458496094, 202.49754333496094, 591.8981323242188, 372.029541015625, 612.02294921875, 381.86041259765625, 583.378173828125, 501.3885498046875, 598.6640625, 521.9430541992188, 551.1273193359375, 502.0205078125, 589.4862060546875, 478.24517822265625]
-
     if len(sq) == 0:
         rospy.loginfo("Person not detected")
         return ObjectDetectionResponse()
@@ -92,14 +94,14 @@ def detect_pointing_object_handler(req):
     ratioWristElbow = 0.33
     image_height, image_width = image.shape[0:2]
 
-    x1, y1 = (points[6, 0], points[6, 1])   # shoulder
-    x2, y2 = (points[8, 0], points[8, 1])   # elbow
-    x3, y3 = (points[10, 0], points[10, 1]) # wrist
+    x_shoulder, y_shoulder = (points[6, 0], points[6, 1])   # shoulder
+    x_elbow, y_elbow       = (points[8, 0], points[8, 1])   # elbow
+    x_wrist, y_wrist       = (points[10, 0], points[10, 1]) # wrist
 
-    x = x3 + ratioWristElbow * (x3 - x2)
-    y = y3 + ratioWristElbow * (y3 - y2)
-    distanceWristElbow    = math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2)
-    distanceElbowShoulder = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    x = x_wrist + ratioWristElbow * (x_wrist - x_elbow)
+    y = y_wrist + ratioWristElbow * (y_wrist - y_elbow)
+    distanceWristElbow    = math.sqrt((x_wrist - x_elbow) ** 2 + (y_wrist - y_elbow) ** 2)
+    distanceElbowShoulder = math.sqrt((x_elbow - x_shoulder) ** 2 + (y_elbow - y_shoulder) ** 2)
     width = 1.5 * max(distanceWristElbow, 0.9 * distanceElbowShoulder)
 
     x -= width / 2
@@ -113,38 +115,35 @@ def detect_pointing_object_handler(req):
     if y + width > image_height: width2 = image_height - y
     width = min(width1, width2)
 
-
-
     hand_estimation = Hand(models + '/hand_pose_model.pth')
 
     x = int(x)
     y = int(y)
     w = int(width)
-    cv2.imwrite("hand.png", image[y:y+w, x:x+w, :])
+
+    cv2.imwrite(images + "/" + date + "_hand.png", image[y:y+w, x:x+w, :])
+
+    
     peaks = hand_estimation(image[y:y+w, x:x+w, :])
+    cv2.imwrite(images + "/" + date + "_hand_sq.png", util.draw_handpose(image[y:y+w, x:x+w, :], [peaks]))
+    
     peaks[:, 0] = np.where(peaks[:, 0]==0, peaks[:, 0], peaks[:, 0]+x)
     peaks[:, 1] = np.where(peaks[:, 1]==0, peaks[:, 1], peaks[:, 1]+y)
 
-    print peaks
-    peaks = peaks / 2
-    print peaks
-    print points
-    points = points / 2
-    print points
-    #peaks = np.array([[336, 207],[327, 221],[315, 231],[304, 244],[296, 253],[296, 225],[276, 235],[266, 243],[256, 250],[297, 228],[288, 248],[296, 259],[307, 262],[302, 230],[293, 249],[298, 259],[308, 263],[307, 233],[304, 246],[309, 252],[318, 250]])
+
     if peaks.all() == 0:
         rospy.loginfo("No hand detected")
         return ObjectDetectionResponse()
 
-    image = cv2.resize(image, (image.shape[1]/2, image.shape[0]/2))
-    print image.shape
-    is_left = (x3 - x1) < 0
-    if is_left:
-        crop = image[:,:x3/2]
+    #image = cv2.resize(image, (image.shape[1]/2, image.shape[0]/2))
+    obj_left = (x_wrist - x_shoulder) < 0
+    if obj_left:
+        crop = image[:,:x_wrist]
     else:
-        crop = image[:,x3/2:]
+        crop = image[:,x_wrist:]
 
-    print crop.shape 
+    cv2.imwrite(images + "/" + date + "_crop.png", crop)
+    
 
     MODEL_PATH = models + "/ctdet_coco_dla_2x.pth"
     TASK = 'ctdet' # or 'multi_pose' for human pose estimation
@@ -175,14 +174,12 @@ def detect_pointing_object_handler(req):
                 bbxs.append(Bbox(bbox[:4], coco_class_name[j-1]))
 
 
-    # bbxs = [
-    # Bbox(np.array([148.29974, 249.3421,  187.45439, 376.2686 ], dtype=np.int32), "bottle"),
-    # Bbox(np.array([230.92738, 285.68988, 287.7627,  346.40366], dtype=np.int32), "cup"),
-    # ]
-
     for bbox in bbxs:
         box = bbox.bbox
-        cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), 0, 1)
+        cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), 0, 2)
+        cv2.rectangle(crop, (box[0], box[1]), (box[2], box[3]), 0, 2)
+
+    cv2.imwrite(images + "/" + date + "_crop_bbox.png", crop)
 
     x1, y1 = peaks[6]
     x2, y2 = peaks[8]
@@ -190,30 +187,56 @@ def detect_pointing_object_handler(req):
     m = 1.0 * (y2 - y1) / (x2 - x1)
     n = y1 - x1 * m
 
-
     if x1 > x2:
         rang = range(x2, 0, -1)
     else:
         rang = range(x2, image.shape[1])
 
 
-    wrist = (points[10, 0], points[10, 1])
-    elbow = (points[8, 0], points[8, 1])
-    print "elbow"
-    print depth[elbow]
+    x_wrist, y_wrist = (points[10, 0], points[10, 1]) 
+    x_finger, y_finger = peaks[5]
+
+    z_wrist = depth[:, x_wrist-1:x_wrist+1]
+    z_wrist = np.min(np.where(z_wrist == 0, 90000, z_wrist))
+    
+    z_finger = depth[:, x_finger-1:x_finger+1]
+    z_finger = np.min(np.where(z_finger == 0, 90000, z_finger))
+    
+
+    (x_wrist, y_wrist) = camera_model.rectifyPoint((x_wrist, y_wrist))
+    wrist = camera_model.projectPixelTo3dRay((x_wrist, y_wrist))
+    wrist = np.array([wrist[0], wrist[1], z_wrist])
+
+    x_finger, y_finger = camera_model.rectifyPoint((x_finger, y_finger))
+    finger = camera_model.projectPixelTo3dRay((x_finger, y_finger))
+    finger = np.array([finger[0], finger[1], z_finger])
+
+
     print "wrist"
-    print depth[wrist]
+    print wrist
     print "finger"
-    print depth[x1, y1]
+    print finger
+
 
     tag = ""
     end = False
     objbbox = []
+    for bbox in bbxs:
+        print bbox.tag
+
+        x_obj, y_obj = bbox.center()
+        z_obj = depth[y_obj-2:y_obj+2:, x_obj-2:x_obj+2]
+        z_obj = np.min(np.where(z_obj == 0, 90000, z_obj))
+
+        x_obj, y_obj = camera_model.rectifyPoint((x_obj, y_obj))
+        obj = camera_model.projectPixelTo3dRay((x_obj, y_obj))
+        bbox.point = np.array([obj[0], obj[1], z_obj])
+
+
     for x in rang:
         y = m * x + n
         for bbox in bbxs:
             if bbox.contains(x, y):
-            	center = bbox.center()
                 tag = bbox.tag
                 objbbox = bbox.bbox 
                 end = True
@@ -224,8 +247,16 @@ def detect_pointing_object_handler(req):
         rospy.loginfo("Object pointed not detected")
         return ObjectDetectionResponse()
 
-    print "object"
-    print depth[center[0], center[1]]
+    for bbox in bbxs:
+        print bbox.tag
+        obj = bbox.point
+        cross = np.cross((obj - finger), (obj - wrist))
+        num = np.linalg.norm(cross)
+        print num / np.linalg.norm(wrist - finger)
+    # print "object"
+    # print m2 * center[0] + n2
+    # print np.max(depth[center[1]-1:center[1]+1, center[0]-1:center[0]+1])
+
     response = ObjectDetectionResponse()
 
     rect = Rect()
@@ -238,9 +269,9 @@ def detect_pointing_object_handler(req):
     response.poses.append(PoseStamped()) # TODO: detect PoseStamped
     response.BBoxes.append(rect)
 
-    print image.shape
+    
     image = util.draw_handpose(image, [peaks])
-    image = cv2.resize(image, (image.shape[1]/2, image.shape[0]/2))
+    #image = cv2.resize(image, (image.shape[1]/2, image.shape[0]/2))
 
     cv2.line(image, (x2, y2), (int(x), int(y)), (255, 0, 0), 2)
     cv2.imwrite(images + "/" + date + "_result.png", image)
