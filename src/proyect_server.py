@@ -22,7 +22,7 @@ class Bbox:
     def __init__(self, bbox, tag):
         self.bbox = bbox
         self.tag = tag
-        self.point = [0, 0, 0]
+        self.distance = 0
 
     def contains(self, x, y):
         l_x = self.bbox[0]
@@ -121,11 +121,11 @@ def detect_pointing_object_handler(req):
     y = int(y)
     w = int(width)
 
-    cv2.imwrite(images + "/" + date + "_hand.png", image[y:y+w, x:x+w, :])
+    #cv2.imwrite(images + "/" + date + "_hand.png", image[y:y+w, x:x+w, :])
 
     
     peaks = hand_estimation(image[y:y+w, x:x+w, :])
-    cv2.imwrite(images + "/" + date + "_hand_sq.png", util.draw_handpose(image[y:y+w, x:x+w, :], [peaks]))
+    #cv2.imwrite(images + "/" + date + "_hand_sq.png", util.draw_handpose(image[y:y+w, x:x+w, :], [peaks]))
     
     peaks[:, 0] = np.where(peaks[:, 0]==0, peaks[:, 0], peaks[:, 0]+x)
     peaks[:, 1] = np.where(peaks[:, 1]==0, peaks[:, 1], peaks[:, 1]+y)
@@ -142,7 +142,7 @@ def detect_pointing_object_handler(req):
     else:
         crop = image[:,x_wrist:]
 
-    cv2.imwrite(images + "/" + date + "_crop.png", crop)
+    #cv2.imwrite(images + "/" + date + "_crop.png", crop)
     
 
     MODEL_PATH = models + "/ctdet_coco_dla_2x.pth"
@@ -179,7 +179,7 @@ def detect_pointing_object_handler(req):
         cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), 0, 2)
         cv2.rectangle(crop, (box[0], box[1]), (box[2], box[3]), 0, 2)
 
-    cv2.imwrite(images + "/" + date + "_crop_bbox.png", crop)
+    #cv2.imwrite(images + "/" + date + "_crop_bbox.png", crop)
 
     x1, y1 = peaks[6]
     x2, y2 = peaks[8]
@@ -193,8 +193,8 @@ def detect_pointing_object_handler(req):
         rang = range(x2, image.shape[1])
 
 
-    x_wrist, y_wrist = (points[10, 0], points[10, 1]) 
-    x_finger, y_finger = peaks[5]
+    x_wrist, y_wrist = peaks[6] 
+    x_finger, y_finger = peaks[8]
 
     z_wrist = depth[:, x_wrist-1:x_wrist+1]
     z_wrist = np.min(np.where(z_wrist == 0, 90000, z_wrist))
@@ -230,13 +230,18 @@ def detect_pointing_object_handler(req):
 
         x_obj, y_obj = camera_model.rectifyPoint((x_obj, y_obj))
         obj = camera_model.projectPixelTo3dRay((x_obj, y_obj))
-        bbox.point = np.array([obj[0], obj[1], z_obj])
+        onj = np.array([obj[0], obj[1], z_obj])
 
+        cross = np.cross((obj - finger), (obj - wrist))
+        num = np.linalg.norm(cross)
+        bbox.distance = num / np.linalg.norm(wrist - finger)
 
+    max_dist = -1
     for x in rang:
         y = m * x + n
         for bbox in bbxs:
-            if bbox.contains(x, y):
+            if bbox.contains(x, y) and (bbox.distance < max_dist or max_dist == -1):
+                max_dist = bbox.distance
                 tag = bbox.tag
                 objbbox = bbox.bbox 
                 end = True
@@ -249,10 +254,8 @@ def detect_pointing_object_handler(req):
 
     for bbox in bbxs:
         print bbox.tag
-        obj = bbox.point
-        cross = np.cross((obj - finger), (obj - wrist))
-        num = np.linalg.norm(cross)
-        print num / np.linalg.norm(wrist - finger)
+        print bbox.distance
+        
     # print "object"
     # print m2 * center[0] + n2
     # print np.max(depth[center[1]-1:center[1]+1, center[0]-1:center[0]+1])
